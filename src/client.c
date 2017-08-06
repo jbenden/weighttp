@@ -9,6 +9,7 @@
  */
 
 #include "weighttp.h"
+#include <arpa/inet.h>
 
 static uint8_t client_parse(Client *client, int size);
 static void client_io_cb(struct ev_loop *loop, ev_io *w, int revents);
@@ -105,6 +106,9 @@ static void client_reset(Client *client) {
 	client->parser_offset = 0;
 	client->request_offset = 0;
 	client->ts_start = 0;
+	client->ts_connect = 0;
+	client->ts_endwrite = 0;
+	client->ts_beginread = 0;
 	client->ts_end = 0;
 	client->status_success = 0;
 	client->success = 0;
@@ -143,6 +147,7 @@ static uint8_t client_connect(Client *client) {
 
 	/* successfully connected */
 	client->state = CLIENT_WRITING;
+	client->ts_connect = ev_now(client->worker->loop);
 	return 1;
 }
 
@@ -156,7 +161,7 @@ static void client_io_cb(struct ev_loop *loop, ev_io *w, int revents) {
 }
 
 void client_state_machine(Client *client) {
-	int r;
+	int r, ret;
 	Config *config = client->worker->config;
 
 	start:
@@ -176,6 +181,26 @@ void client_state_machine(Client *client) {
 				goto start;
 			}
 
+      /* bind to local address */
+      if (0 != config->laddr_size) {
+        do {
+          struct sockaddr_in laddr;
+          uint16_t port = client->worker->current_port++;
+          if (client->worker->current_port >= LADDR_PORT_END) {
+            client->worker->current_port = LADDR_PORT_BEG;
+            client->worker->current_laddr++;
+          }
+          if (client->worker->current_laddr >= client->worker->laddrs_ip_end) {
+            client->worker->current_laddr = client->worker->laddrs_ip_beg;
+          }
+
+          /* select local address */
+          laddr = config->laddres[client->worker->current_laddr];
+          laddr.sin_port = htons(port);
+          ret = bind(r, (struct sockaddr *) &laddr, sizeof(laddr));
+        } while (-1 == ret);
+      }
+
 			/* set non-blocking */
 			fcntl(r, F_SETFL, O_NONBLOCK | O_RDWR);
 
@@ -183,6 +208,7 @@ void client_state_machine(Client *client) {
 			ev_io_set(&client->sock_watcher, r, EV_WRITE);
 			ev_io_start(client->worker->loop, &client->sock_watcher);
 
+			client->ts_start = ev_now(client->worker->loop);
 			if (!client_connect(client)) {
 				client->state = CLIENT_ERROR;
 				goto start;
@@ -213,6 +239,7 @@ void client_state_machine(Client *client) {
 					if (client->request_offset == config->request_size) {
 						/* whole request was sent, start reading */
 						client->state = CLIENT_READING;
+						client->ts_endwrite = ev_now(client->worker->loop);
 						client_set_events(client, EV_READ);
 					}
 
@@ -236,6 +263,8 @@ void client_state_machine(Client *client) {
 					client->state = CLIENT_ERROR;
 				} else if (r != 0) {
 					/* success */
+					if(0 == client->ts_beginread)
+						client->ts_beginread = ev_now(client->worker->loop);
 					client->bytes_received += r;
 					client->buffer_offset += r;
 					client->worker->stats.bytes_total += r;
@@ -277,9 +306,17 @@ void client_state_machine(Client *client) {
 			client->keepalive = 0;
 			client->success = 0;
 			client->state = CLIENT_END;
-		case CLIENT_END:
+		case CLIENT_END: {
 			/* update worker stats */
-			client->worker->stats.req_done++;
+			uint64_t times_index;
+      struct Times * s;
+      times_index = client->worker->stats.req_done++;
+      s= &client->worker->stats.times[times_index];
+      client->ts_end = ev_now(client->worker->loop);
+      s->starttime = client->ts_start;
+      s->ctime = ap_max(0, client->ts_connect - client->ts_start);
+      s->time = ap_max(0, client->ts_end - client->ts_start);
+      s->waittime = ap_max(0, client->ts_beginread - client->ts_endwrite);
 
 			if (client->success) {
 				client->worker->stats.req_success++;
@@ -308,6 +345,7 @@ void client_state_machine(Client *client) {
 				client_reset(client);
 				goto start;
 			}
+		}
 	}
 }
 

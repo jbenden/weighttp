@@ -9,8 +9,9 @@
  */
 
 #include "weighttp.h"
+#include <arpa/inet.h>
 
-Worker *worker_new(uint8_t id, Config *config, uint16_t num_clients, uint64_t num_requests) {
+Worker *worker_new(uint8_t id, Config *config, uint16_t num_clients, uint64_t num_requests, struct Times * times) {
 	Worker *worker;
 	uint16_t i;
 
@@ -21,7 +22,19 @@ Worker *worker_new(uint8_t id, Config *config, uint16_t num_clients, uint64_t nu
 	worker->config = config;
 	worker->num_clients = num_clients;
 	worker->stats.req_todo = num_requests;
+	worker->stats.times = times;
 	worker->progress_interval = num_requests / 10;
+	if(0 < config->laddr_size) {
+	  uint16_t num_laddrs = config->laddr_size / config->thread_count;
+	  worker->laddrs_ip_beg = (id - 1) * num_laddrs;
+	  worker->laddrs_ip_end = worker->laddrs_ip_beg + num_laddrs;
+	  printf("worker-%u will use local addresses:\n", id);
+	  for(i = worker->laddrs_ip_beg; i < worker->laddrs_ip_end; ++i) {
+	    printf("\t%s\n", inet_ntoa(config->laddres[i].sin_addr));
+	  }
+	  worker->current_laddr = worker->laddrs_ip_beg;
+	  worker->current_port = LADDR_PORT_BEG;
+	}
 
 	if (worker->progress_interval == 0)
 		worker->progress_interval = 1;

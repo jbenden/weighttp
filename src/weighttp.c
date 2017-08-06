@@ -7,8 +7,17 @@
  * License:
  *     MIT, see COPYING file
  */
-
+#include <limits.h>
+#include <math.h>
 #include "weighttp.h"
+
+#include <arpa/inet.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+
+
 
 extern int optind, optopt; /* getopt */
 
@@ -20,6 +29,8 @@ static void show_help(void) {
 	printf("  -k       keep alive            (default: no)\n");
 	printf("  -6       use ipv6              (default: no)\n");
 	printf("  -H str   add header to request\n");
+	printf("  -L ip    local ip address\n");
+  printf("  -M mask  local network mask\n");
 	printf("  -h       show help and exit\n");
 	printf("  -v       show version and exit\n\n");
 	printf("example: weighttpd -n 10000 -c 10 -t 2 -k -H \"User-Agent: foo\" localhost/index.html\n\n");
@@ -213,6 +224,234 @@ uint64_t str_to_uint64(char *str) {
 	return i;
 }
 
+static int compradre(struct Times * a, struct Times * b)
+{
+  if ((a->ctime) < (b->ctime))
+    return -1;
+  if ((a->ctime) > (b->ctime))
+    return +1;
+  return 0;
+}
+
+static int comprando(struct Times * a, struct Times * b)
+{
+  if ((a->time) < (b->time))
+    return -1;
+  if ((a->time) > (b->time))
+    return +1;
+  return 0;
+}
+
+static int compri(struct Times * a, struct Times * b)
+{
+  ev_tstamp p = a->time - a->ctime;
+  ev_tstamp q = b->time - b->ctime;
+  if (p < q)
+    return -1;
+  if (p > q)
+    return +1;
+  return 0;
+}
+
+static int compwait(struct Times * a, struct Times * b)
+{
+  if ((a->waittime) < (b->waittime))
+    return -1;
+  if ((a->waittime) > (b->waittime))
+    return 1;
+  return 0;
+}
+
+static void output_results(uint64_t done, struct Times * stats) {
+  /* work out connection times */
+  uint16_t i;
+  ev_tstamp totalcon = 0, total = 0, totald = 0, totalwait = 0;
+  ev_tstamp meancon, meantot, meand, meanwait;
+  ev_tstamp mincon = ULONG_MAX, mintot = ULONG_MAX, mind = ULONG_MAX,
+            minwait = ULONG_MAX;
+  ev_tstamp maxcon = 0, maxtot = 0, maxd = 0, maxwait = 0;
+  ev_tstamp mediancon = 0, mediantot = 0, mediand = 0, medianwait = 0;
+  ev_tstamp sdtot = 0, sdcon = 0, sdd = 0, sdwait = 0;
+
+  for (i = 0; i < done; i++) {
+    struct Times *s = &stats[i];
+    mincon = ap_min(mincon, s->ctime);
+    mintot = ap_min(mintot, s->time);
+    mind = ap_min(mind, s->time - s->ctime);
+    minwait = ap_min(minwait, s->waittime);
+
+    maxcon = ap_max(maxcon, s->ctime);
+    maxtot = ap_max(maxtot, s->time);
+    maxd = ap_max(maxd, s->time - s->ctime);
+    maxwait = ap_max(maxwait, s->waittime);
+
+    totalcon += s->ctime;
+    total += s->time;
+    totald += s->time - s->ctime;
+    totalwait += s->waittime;
+  }
+  meancon = totalcon / done;
+  meantot = total / done;
+  meand = totald / done;
+  meanwait = totalwait / done;
+
+  /* calculating the sample variance: the sum of the squared deviations, divided by n-1 */
+  for (i = 0; i < done; i++) {
+    struct Times *s = &stats[i];
+    ev_tstamp a;
+    a = (s->time - meantot);
+    sdtot += a * a;
+    a = (s->ctime - meancon);
+    sdcon += a * a;
+    a = (s->time - s->ctime - meand);
+    sdd += a * a;
+    a = (s->waittime - meanwait);
+    sdwait += a * a;
+  }
+
+  sdtot = (done > 1) ? sqrt(sdtot / (done - 1)) : 0;
+  sdcon = (done > 1) ? sqrt(sdcon / (done - 1)) : 0;
+  sdd = (done > 1) ? sqrt(sdd / (done - 1)) : 0;
+  sdwait = (done > 1) ? sqrt(sdwait / (done - 1)) : 0;
+
+  /*
+   * XXX: what is better; this hideous cast of the compradre function; or
+   * the four warnings during compile ? dirkx just does not know and
+   * hates both/
+   */
+  qsort(stats, done, sizeof(struct Times),
+      (int (*)(const void *, const void *))compradre);
+  if ((done > 1) && (done % 2))
+    mediancon = (stats[done / 2].ctime + stats[done / 2 + 1].ctime) / 2;
+  else
+    mediancon = stats[done / 2].ctime;
+
+  qsort(stats, done, sizeof(struct Times),
+      (int (*)(const void *, const void *))compri);
+  if ((done > 1) && (done % 2))
+    mediand = (stats[done / 2].time + stats[done / 2 + 1].time
+        - stats[done / 2].ctime - stats[done / 2 + 1].ctime) / 2;
+  else
+    mediand = stats[done / 2].time - stats[done / 2].ctime;
+
+  qsort(stats, done, sizeof(struct Times),
+      (int (*)(const void *, const void *))compwait);
+  if ((done > 1) && (done % 2))
+    medianwait = (stats[done / 2].waittime + stats[done / 2 + 1].waittime) / 2;
+  else
+    medianwait = stats[done / 2].waittime;
+
+  qsort(stats, done, sizeof(struct Times),
+      (int (*)(const void *, const void *))comprando);
+  if ((done > 1) && (done % 2))
+    mediantot = (stats[done / 2].time + stats[done / 2 + 1].time) / 2;
+  else
+    mediantot = stats[done / 2].time;
+
+  printf("\nConnection Times (ms)\n");
+  /*
+   * Reduce stats from apr time to milliseconds
+   */
+  mincon = ap_double_ms(mincon);
+  mind = ap_double_ms(mind);
+  minwait = ap_double_ms(minwait);
+  mintot = ap_double_ms(mintot);
+  meancon = ap_double_ms(meancon);
+  meand = ap_double_ms(meand);
+  meanwait = ap_double_ms(meanwait);
+  meantot = ap_double_ms(meantot);
+  mediancon = ap_double_ms(mediancon);
+  mediand = ap_double_ms(mediand);
+  medianwait = ap_double_ms(medianwait);
+  mediantot = ap_double_ms(mediantot);
+  maxcon = ap_double_ms(maxcon);
+  maxd = ap_double_ms(maxd);
+  maxwait = ap_double_ms(maxwait);
+  maxtot = ap_double_ms(maxtot);
+  sdcon = ap_double_ms(sdcon);
+  sdd = ap_double_ms(sdd);
+  sdwait = ap_double_ms(sdwait);
+  sdtot = ap_double_ms(sdtot);
+
+#define CONF_FMT_STRING "%5.3f %4.3f %5.1f %6.3f %7.3f\n"
+#define     SANE(what,mean,median,sd) \
+              { \
+                double d = (double)mean - median; \
+                if (d < 0) d = -d; \
+                if (d > 2 * sd ) \
+                    printf("ERROR: The median and mean for " what " are more than twice the standard\n" \
+                           "       deviation apart. These results are NOT reliable.\n"); \
+                else if (d > sd ) \
+                    printf("WARNING: The median and mean for " what " are not within a normal deviation\n" \
+                           "        These results are probably not that reliable.\n"); \
+            }
+
+  printf("              min  mean[+/-sd] median   max\n");
+  printf("Connect:    " CONF_FMT_STRING,
+      mincon, meancon, sdcon, mediancon, maxcon);
+  printf("Processing: " CONF_FMT_STRING,
+      mind, meand, sdd, mediand, maxd);
+  printf("Waiting:    " CONF_FMT_STRING,
+      minwait, meanwait, sdwait, medianwait, maxwait);
+  printf("Total:      " CONF_FMT_STRING,
+      mintot, meantot, sdtot, mediantot, maxtot);
+  SANE("the initial connection time", meancon, mediancon, sdcon);
+  SANE("the processing time", meand, mediand, sdd);
+  SANE("the waiting time", meanwait, medianwait, sdwait);
+  SANE("the total time", meantot, mediantot, sdtot);
+
+  /* Sorted on total connect times */
+  if ((done > 1)) {
+    int percs[] = {50, 66, 75, 80, 90, 95, 98, 99, 100};
+    printf("\nPercentage of the requests served within a certain time (ms)\n");
+    for (i = 0; i < sizeof(percs) / sizeof(int); i++) {
+      if (percs[i] <= 0)
+        printf(" 0%%  <0> (never)\n");
+      else if (percs[i] >= 100)
+        printf(" 100%%  %5.3f (longest request)\n",
+            ap_double_ms(stats[done - 1].time));
+      else
+        printf("  %d%%  %5.3f\n", percs[i],
+            ap_double_ms(stats[(int)(done * percs[i] / 100)].time));
+    }
+  }
+}
+
+
+static int setup_local_addresses(in_addr_t laddr, in_addr_t lmask,
+                                 Config * config) {
+  int count, i;
+  struct ifreq interfaces[LOCAL_ADDRESS_MAX];
+  struct ifconf req;
+
+  int fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_IP);
+  if (-1 == fd) {
+    fprintf(stderr, "Failed to create socket. error = %s", strerror(errno));
+    return -1;
+  }
+
+  bzero(&interfaces, sizeof(interfaces));
+  req.ifc_len = sizeof(interfaces);
+  req.ifc_req = interfaces;
+
+  if (ioctl(fd, SIOCGIFCONF, &req)) {
+    fprintf(stderr, "Failed to list interfaces. error = %s", strerror(errno));
+    close(fd);
+    return errno;
+  }
+
+  count = req.ifc_len / sizeof(interfaces[0]);
+  config->laddr_size = 0;
+  for (i = 0; i < count; ++i) {
+    struct sockaddr_in * in = (struct sockaddr_in *) (&interfaces[i].ifr_addr);
+    if (laddr == (in->sin_addr.s_addr & lmask))
+      config->laddres[config->laddr_size++] = *in;
+  }
+
+  close(fd);
+  return 0;
+}
+
 int main(int argc, char *argv[]) {
 	Worker **workers;
 	pthread_t *threads;
@@ -234,6 +473,10 @@ int main(int argc, char *argv[]) {
 	uint64_t kbps;
 	char **headers;
 	uint8_t headers_num;
+	struct Times * times;
+	uint64_t times_offet;
+  in_addr_t laddr;
+  in_addr_t lmask;
 
 	printf("weighttp " PACKAGE_VERSION " - a lightweight and simple webserver benchmarking tool\n\n");
 
@@ -247,7 +490,11 @@ int main(int argc, char *argv[]) {
 	config.req_count = 0;
 	config.keep_alive = 0;
 
-	while ((opt = getopt(argc, argv, ":hv6kn:t:c:H:")) != -1) {
+	laddr = 0;
+	lmask = 0;
+	config.laddr_size = 0;
+
+	while ((opt = getopt(argc, argv, ":hv6kn:t:c:H:L:M:")) != -1) {
 		switch (opt) {
 			case 'h':
 				show_help();
@@ -269,6 +516,12 @@ int main(int argc, char *argv[]) {
 			case 'c':
 				config.concur_count = atoi(optarg);
 				break;
+      case 'L':
+        laddr = inet_addr(optarg);
+        break;
+      case 'M':
+        lmask = inet_addr(optarg);
+        break;
 			case 'H':
 				headers = W_REALLOC(headers, char*, headers_num+1);
 				headers[headers_num] = optarg;
@@ -317,6 +570,16 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
+  if (0 != laddr) {
+    if (0 == lmask) {
+      config.laddr_size = 1;
+      config.laddres[0].sin_family = AF_INET;
+      config.laddres[0].sin_port = 0;
+      config.laddres[0].sin_addr.s_addr = laddr;
+    } else {
+      setup_local_addresses(laddr, lmask, &config);
+    }
+  }
 
 	loop = ev_default_loop(0);
 	if (!loop) {
@@ -337,6 +600,7 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
+	times = W_MALLOC(struct Times, config.req_count);
 	/* spawn threads */
 	threads = W_MALLOC(pthread_t, config.thread_count);
 	workers = W_MALLOC(Worker*, config.thread_count);
@@ -349,6 +613,7 @@ int main(int argc, char *argv[]) {
 	memset(&stats, 0, sizeof(stats));
 	ts_start = ev_time();
 
+	times_offet = 0;
 	for (i = 0; i < config.thread_count; i++) {
 		uint64_t reqs = config.req_count / config.thread_count;
 		uint16_t concur = config.concur_count / config.thread_count;
@@ -363,7 +628,8 @@ int main(int argc, char *argv[]) {
 			rest_req -= 1;
 		}
 		printf("spawning thread #%d: %"PRIu16" concurrent requests, %"PRIu64" total requests\n", i+1, concur, reqs);
-		workers[i] = worker_new(i+1, &config, concur, reqs);
+		workers[i] = worker_new(i+1, &config, concur, reqs, times + times_offet);
+		times_offet += reqs;
 
 		if (!(workers[i])) {
 			W_ERROR("%s", "failed to allocate worker or client");
@@ -421,6 +687,8 @@ int main(int argc, char *argv[]) {
 	printf("traffic: %"PRIu64" bytes total, %"PRIu64" bytes http, %"PRIu64" bytes data\n",
 		stats.bytes_total,  stats.bytes_total - stats.bytes_body, stats.bytes_body
 	);
+	if (stats.req_done > 0)
+	  output_results(stats.req_done, times);
 
 	ev_default_destroy();
 
