@@ -465,6 +465,7 @@ int main(int argc, char *argv[]) {
 	char *host;
 	uint16_t port;
 	uint8_t use_ipv6;
+	uint8_t use_stats;
 	uint16_t rest_concur, rest_req;
 	Stats stats;
 	ev_tstamp duration;
@@ -485,6 +486,7 @@ int main(int argc, char *argv[]) {
 
 	/* default settings */
 	use_ipv6 = 0;
+	use_stats = 0;
 	config.thread_count = 1;
 	config.concur_count = 1;
 	config.req_count = 0;
@@ -494,7 +496,7 @@ int main(int argc, char *argv[]) {
 	lmask = 0;
 	config.laddr_size = 0;
 
-	while ((opt = getopt(argc, argv, ":hv6kn:t:c:H:L:M:")) != -1) {
+	while ((opt = getopt(argc, argv, ":hv6skn:t:c:H:L:M:")) != -1) {
 		switch (opt) {
 			case 'h':
 				show_help();
@@ -503,6 +505,9 @@ int main(int argc, char *argv[]) {
 				return 0;
 			case '6':
 				use_ipv6 = 1;
+				break;
+			case 's':
+				use_stats = 1;
 				break;
 			case 'k':
 				config.keep_alive = 1;
@@ -687,7 +692,7 @@ int main(int argc, char *argv[]) {
 	printf("traffic: %"PRIu64" bytes total, %"PRIu64" bytes http, %"PRIu64" bytes data\n",
 		stats.bytes_total,  stats.bytes_total - stats.bytes_body, stats.bytes_body
 	);
-	if (stats.req_done > 0)
+	if (stats.req_done > 0 && use_stats)
 	  output_results(stats.req_done, times);
 
 	ev_default_destroy();
