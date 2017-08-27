@@ -1,4 +1,10 @@
-weighttp (0.4-1) UNRELEASED; urgency=low
+weighttp (0.4-2) xenial; urgency=low
+
+  * Fixed runtime dependency: libev4 
+
+ -- Joseph Benden <joe@benden.us>  Sun, 27 Aug 2017 14:40:53 -0700
+
+weighttp (0.4-1) xenial; urgency=low
 
   * Initial release.
 
