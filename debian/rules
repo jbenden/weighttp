@@ -1,0 +1,16 @@
+#!/usr/bin/make -f
+# You must remove unused comment lines for the released package.
+#export DH_VERBOSE = 1
+#export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+#export DEB_CFLAGS_MAINT_APPEND  = -Wall -pedantic
+#export DEB_LDFLAGS_MAINT_APPEND = -Wl,--as-needed
+
+%:
+	dh $@ --with autoreconf 
+
+override_dh_autoreconf:
+	dh_autoreconf -- ./autogen.sh
+
+override_dh_clean:
+	dh_clean config.log config.status waf
+	rm -fr build .waf-1.5.9-d1e0349fc8937631a656fb8ea7e99063

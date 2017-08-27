@@ -1,0 +1,14 @@
+Source: weighttp
+Section: net
+Priority: extra
+Maintainer: Joseph Benden <joe@benden.us>
+Build-Depends: debhelper (>=9), dh-autoreconf, libev-dev
+Standards-Version: 3.9.6
+Homepage: https://github.com/jbenden/weighttp
+
+Package: weighttp
+Architecture: any
+Multi-Arch: foreign
+Depends: libev, ${misc:Depends}, ${shlibs:Depends}
+Description: Webserver Benchmarking Tool
+ A lightweight and simple benchmarking tool.
