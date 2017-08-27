@@ -47,6 +47,9 @@ def configure(conf):
 	conf.check(lib='pthread', uselib_store='pthread', mandatory=True)
 	conf.check(header_name='pthread.h', uselib='pthread', mandatory=True)
 
+	# check for math library
+	conf.check(lib='m', uselib_store='m', mandatory=True)
+
 	# check for needed headers
 	conf.check(header_name='unistd.h')
 	conf.check(header_name='stdint.h')
@@ -63,6 +66,6 @@ def build(bld):
 		source = ['src/client.c', 'src/weighttp.c', 'src/worker.c'],
 		defines = ['PACKAGE_VERSION="' + VERSION + '"'],
 		includes = '.',
-		uselib = 'ev pthread',
+		uselib = 'ev pthread m',
 		target = 'weighttp'
 	)
