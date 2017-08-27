@@ -31,6 +31,9 @@ AC_DEFUN([TRY_CFLAGS],
 ])
 
 
+## need math library
+AC_SEARCH_LIBS([sqrt],[m])
+
 ## solaris needs -lsocket
 AC_SEARCH_LIBS([socket],[socket])
 
