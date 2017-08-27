@@ -1,3 +1,9 @@
+weighttp (0.4-3) xenial; urgency=low
+
+  * Ensure clean build against upstream.
+
+ -- Joseph Benden <joe@benden.us>  Sun, 27 Aug 2017 14:44:46 -0700
+
 weighttp (0.4-2) xenial; urgency=low
 
   * Fixed runtime dependency: libev4 
